@@ -16,4 +16,4 @@ clean:
 	rm -f *.o myos.bin
 
 run: myos.bin
-	qemu-system-i386 -kernel myos.bin
+	qemu-system-x86_64 -kernel myos.bin
