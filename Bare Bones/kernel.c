@@ -73,15 +73,37 @@ enum vga_color {
 
 /*
     * static: This means the function is only visible to the file it's in.
-    
+    * inline: This is a hint to the compiler to "copy-paste" the math directly where the function is called instead of jumping to a separate piece of code. It's a tiny bit faster, which is good for low-level graphics
+	* uint8_t: This tells us the result is exactly 1 byte (8 bits).
 */
 static inline uint8_t vga_entry_color(enum vga_color fg, enum vga_color bg) {
-	return fg | bg << 4;
+	return fg | bg << 4; // The VGA hardware expects the color byte to be split: the first 4 bits are the foreground, and the last 4 bits are the background.
+	/*
+		A Concrete Example
+		Imagine you want Red text (4) on a Blue background (1).
+			Foreground (4) in binary: 0000 0100
+			Background (1) in binary: 0000 0001
+		When we do bg << 4, the background becomes: 0001 0000.
+		Now, we combine them:
+			0001 0000  (Background shifted)
+			0000 0100  (Foreground)
+			-----------
+			0001 0100  (Final byte: 0x14)
+
+		The VGA hardware sees 0x14 and knows exactly what colors to draw.
+	*/
 }
 
 static inline uint16_t vga_entry(unsigned char uc, uint8_t color) 
 {
 	return (uint16_t) uc | (uint16_t) color << 8;
+	/*
+		(uint16_t) uc: We take the character (like 'A', which is 0x41) and make sure the computer treats it as a 16-bit number: 00000000 01000001.
+		(uint16_t) color << 8: We take the color byte and "slide" it 8 bits to the left. If the color was 0x1F (White on Blue), it becomes 00011111 00000000.
+		| (Bitwise OR): We merge them together.
+
+		A single 16-bit value that looks like this: [ COLOR BYTE ] [ CHARACTER BYTE ]. The first 8-bit for color, and the second for data
+	*/
 }
 
 size_t strlen(const char* str) 
@@ -101,11 +123,14 @@ size_t terminal_column;
 uint8_t terminal_color;
 uint16_t* terminal_buffer = (uint16_t*)VGA_MEMORY;
 
+/*
+	When booting a OS the 2000 slots for memory buffer might be filled with garbage, now we intentionally fill it with ' ' making it seem it is blank
+*/
 void terminal_initialize(void) 
 {
 	terminal_row = 0;
 	terminal_column = 0;
-	terminal_color = vga_entry_color(VGA_COLOR_LIGHT_GREY, VGA_COLOR_BLACK);
+	terminal_color = vga_entry_color( VGA_COLOR_BLUE, VGA_COLOR_BLACK );
 	
 	for (size_t y = 0; y < VGA_HEIGHT; y++) {
 		for (size_t x = 0; x < VGA_WIDTH; x++) {
@@ -115,19 +140,37 @@ void terminal_initialize(void)
 	}
 }
 
-void terminal_setcolor(uint8_t color) 
-{
+/*
+	Changes the color of the text
+*/
+void terminal_setcolor(uint8_t color) {
 	terminal_color = color;
 }
 
-void terminal_putentryat(char c, uint8_t color, size_t x, size_t y) 
-{
+/*
+	This is the "Scalpel." It doesn't care about cursors or rows; it just puts one character at one specific spot.
+    It calculates the index (the 1D "flat" address).
+    It calls vga_entry to pack the character and color together.
+    It writes that 16-bit package into the terminal_buffer.
+*/
+void terminal_putentryat(char c, uint8_t color, size_t x, size_t y) {
 	const size_t index = y * VGA_WIDTH + x;
 	terminal_buffer[index] = vga_entry(c, color);
 }
 
 void terminal_putchar(char c) 
 {
+	if (c == '\n') {
+        terminal_column = 0;
+        terminal_row++;
+        return; // Don't draw the \n character!
+	}
+
+	if (c == '\t') {
+        terminal_column += 4;
+        return; // Don't draw the \t character!
+	}
+
 	terminal_putentryat(c, terminal_color, terminal_column, terminal_row);
 	if (++terminal_column == VGA_WIDTH) {
 		terminal_column = 0;
@@ -136,8 +179,10 @@ void terminal_putchar(char c)
 	}
 }
 
-void terminal_write(const char* data, size_t size) 
-{
+/*
+	Write out to the terminal
+*/
+void terminal_write(const char* data, size_t size) {
 	for (size_t i = 0; i < size; i++)
 		terminal_putchar(data[i]);
 }
@@ -153,5 +198,8 @@ void kernel_main(void)
 	terminal_initialize();
 
 	/* Newline support is left as an exercise. */
-	terminal_writestring("Hello, kernel World!\n");
+	for (size_t i = 0; i < 24; ++i ){
+		terminal_writestring("Hello OS\n");
+	}
+	terminal_writestring("Hello \t FINAL");
 }
