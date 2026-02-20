@@ -158,25 +158,59 @@ void terminal_putentryat(char c, uint8_t color, size_t x, size_t y) {
 	terminal_buffer[index] = vga_entry(c, color);
 }
 
+void terminal_scroll() {
+    // 1. Move rows 1 through 24 up by one
+    for (size_t y = 0; y < VGA_HEIGHT - 1; y++) {
+        for (size_t x = 0; x < VGA_WIDTH; x++) {
+            const size_t src_index = (y + 1) * VGA_WIDTH + x;
+            const size_t dest_index = y * VGA_WIDTH + x;
+            terminal_buffer[dest_index] = terminal_buffer[src_index];
+        }
+    }
+
+    // 2. Clear the last row
+    const size_t last_row_y = VGA_HEIGHT - 1;
+    for (size_t x = 0; x < VGA_WIDTH; x++) {
+        const size_t index = last_row_y * VGA_WIDTH + x;
+        terminal_buffer[index] = vga_entry(' ', terminal_color);
+    }
+}
+
 void terminal_putchar(char c) 
 {
 	if (c == '\n') {
         terminal_column = 0;
-        terminal_row++;
+
+		if (++terminal_row == VGA_HEIGHT) {
+            terminal_scroll();
+            terminal_row = VGA_HEIGHT - 1;
+        }
+
         return; // Don't draw the \n character!
 	}
-
-	if (c == '\t') {
-        terminal_column += 4;
-        return; // Don't draw the \t character!
+	else if (c == '\t') {
+		terminal_column = (terminal_column + 4) & ~3; // This aligns to the next multiple of 4
+		if (terminal_column >= VGA_WIDTH) {           // Check if we went off the edge
+			terminal_column = 0;
+			if (++terminal_row == VGA_HEIGHT) {
+				terminal_scroll();
+				terminal_row = VGA_HEIGHT - 1;
+			}
+		}
+		return;
 	}
+	else {
+        terminal_putentryat(c, terminal_color, terminal_column, terminal_row);
+        if (++terminal_column == VGA_WIDTH) {
+            terminal_column = 0;
+            if (++terminal_row == VGA_HEIGHT) {
+                terminal_scroll();
+                terminal_row = VGA_HEIGHT - 1;
+            }
+        }
+    }
 
-	terminal_putentryat(c, terminal_color, terminal_column, terminal_row);
-	if (++terminal_column == VGA_WIDTH) {
-		terminal_column = 0;
-		if (++terminal_row == VGA_HEIGHT)
-			terminal_row = 0;
-	}
+	
 }
 
 /*
@@ -198,7 +232,7 @@ void kernel_main(void)
 	terminal_initialize();
 
 	/* Newline support is left as an exercise. */
-	for (size_t i = 0; i < 24; ++i ){
+	for (size_t i = 0; i < 25; ++i ){
 		terminal_writestring("Hello OS\n");
 	}
 	terminal_writestring("Hello \t FINAL");
