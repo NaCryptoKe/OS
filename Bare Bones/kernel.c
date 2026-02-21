@@ -51,6 +51,35 @@
 #error "This tutorial needs to be compiled with a ix86-elf compiler"
 #endif
 
+/* The 'outb' (Output Byte) instruction. 
+   This tells the CPU to send 1 byte of data to a specific hardware 'port'.
+   Ports are like the 'side doors' of the CPU that lead to hardware controllers 
+   (like the VGA chip) instead of the RAM.
+*/
+static inline void outb(uint16_t port, uint8_t val) {
+    asm volatile ( "outb %b0, %w1" : : "a"(val), "Nd"(port) : "memory");
+}
+
+/* 
+	This function talks to the VGA Internal Registers. 
+	The cursor position is a 16-bit number (0 to 1999). 
+	Because we can only send 8 bits at a time via outb, we have to send the 
+	Low Byte (the first 8 bits) and then the High Byte (the last 8 bits).
+*/
+void terminal_update_cursor(size_t x, size_t y) {
+    uint16_t pos = y * 80 + x; // 80 is VGA_WIDTH
+
+    /* 0x3D4 is the 'Index' port. 0x3D5 is the 'Data' port. */
+
+    // Tell the VGA chip we are sending the Low Byte (register 15)
+    outb(0x3D4, 0x0F);
+    outb(0x3D5, (uint8_t) (pos & 0xFF));
+    
+    // Tell the VGA chip we are sending the High Byte (register 14)
+    outb(0x3D4, 0x0E);
+    outb(0x3D5, (uint8_t) ((pos >> 8) & 0xFF));
+}
+
 /* Hardware text mode color constants. */
 enum vga_color {
 	VGA_COLOR_BLACK = 0,
@@ -138,6 +167,8 @@ void terminal_initialize(void)
 			terminal_buffer[index] = vga_entry(' ', terminal_color);
 		}
 	}
+	/* We sync the physical cursor to (0,0) after clearing the screen */
+	terminal_update_cursor(terminal_column, terminal_row);
 }
 
 /*
@@ -185,8 +216,6 @@ void terminal_putchar(char c)
             terminal_scroll();
             terminal_row = VGA_HEIGHT - 1;
         }
-
-        return; // Don't draw the \n character!
 	}
 	else if (c == '\t') {
 		terminal_column = (terminal_column + 4) & ~3; // This aligns to the next multiple of 4
@@ -197,7 +226,6 @@ void terminal_putchar(char c)
 				terminal_row = VGA_HEIGHT - 1;
 			}
 		}
-		return;
 	}
 	else {
         terminal_putentryat(c, terminal_color, terminal_column, terminal_row);
@@ -210,7 +238,11 @@ void terminal_putchar(char c)
         }
     }
 
-	
+	/* 
+		CRITICAL: After every character or control code (\n, \t), we update 
+		the physical cursor to match our terminal_column and terminal_row. 
+    */
+    terminal_update_cursor(terminal_column, terminal_row);
 }
 
 /*
