@@ -1,45 +1,6 @@
-#include <stdbool.h>
-/*
-    stdbool.h (Standard Boolean)
-
-    By default, original C didn't have a real true or false type (it just used 0 and 1).
-
-    This header defines:
-
-        bool: The data type.
-        true: Defined as 1.
-        false: Defined as 0.
-
-    It makes your kernel code much more readable. Instead of writing if (is_running == 1), you can write if (is_running).
-*/
-
-#include <stddef.h>
-/*
-    stddef.h (Standard Definitions)
-
-    This header provides a few "quality of life" definitions that are used everywhere in C. The two biggest ones are:
-
-        NULL: Defined as (void*)0. It represents a pointer that points to nothing.
-        size_t: This is an unsigned integer type used to represent the size of objects in memory. On a 32-bit system, it’s a 32-bit number; on a 64-bit system, it’s 64-bit. It’s the "proper" way to handle memory sizes or array indices.
-*/
-
-#include <stdint.h>
-/*
-    stdint.h (Standard Integers)
-
-    This is the most important one for a kernel developer.
-
-    In normal C, an int might be 2 bytes on one computer and 4 bytes on another. When you are talking to hardware, you need to be exact. If a hardware register is exactly 32 bits wide, you can't guess.
-
-    stdint.h gives you "fixed-width" types:
-
-        uint8_t: An unsigned 8-bit integer (exactly 1 byte). Great for characters or raw bytes.
-        uint16_t: Exactly 16 bits.
-        uint32_t: Exactly 32 bits.
-        uint64_t: Exactly 64 bits.
-
-    Why use this? If you are writing to the VGA screen buffer (which uses 16-bit values for colors and characters), you use uint16_t so you know for a fact you aren't accidentally writing too much or too little data.
-*/
+#include "common.h"
+#include "vga.h"
+#include "keyboard.h"
 
 /* Check if the compiler thinks you are targeting the wrong operating system. */
 #if defined(__linux__)
@@ -51,221 +12,41 @@
 #error "This tutorial needs to be compiled with a ix86-elf compiler"
 #endif
 
-/* The 'outb' (Output Byte) instruction. 
-   This tells the CPU to send 1 byte of data to a specific hardware 'port'.
-   Ports are like the 'side doors' of the CPU that lead to hardware controllers 
-   (like the VGA chip) instead of the RAM.
-*/
-static inline void outb(uint16_t port, uint8_t val) {
-    asm volatile ( "outb %b0, %w1" : : "a"(val), "Nd"(port) : "memory");
-}
 
-/* 
-	This function talks to the VGA Internal Registers. 
-	The cursor position is a 16-bit number (0 to 1999). 
-	Because we can only send 8 bits at a time via outb, we have to send the 
-	Low Byte (the first 8 bits) and then the High Byte (the last 8 bits).
-*/
-void terminal_update_cursor(size_t x, size_t y) {
-    uint16_t pos = y * 80 + x; // 80 is VGA_WIDTH
+void kernel_main(void) {
+    terminal_initialize();
+    terminal_writestring("Kernel Booted. Try Shift AND Caps Lock!\n");
 
-    /* 0x3D4 is the 'Index' port. 0x3D5 is the 'Data' port. */
+    bool is_shift_pressed = false;
+    bool is_caps_locked = false;
 
-    // Tell the VGA chip we are sending the Low Byte (register 15)
-    outb(0x3D4, 0x0F);
-    outb(0x3D5, (uint8_t) (pos & 0xFF));
-    
-    // Tell the VGA chip we are sending the High Byte (register 14)
-    outb(0x3D4, 0x0E);
-    outb(0x3D5, (uint8_t) ((pos >> 8) & 0xFF));
-}
+    while (1) {
+        uint8_t scancode = keyboard_read_scancode();
 
-/* Hardware text mode color constants. */
-enum vga_color {
-	VGA_COLOR_BLACK = 0,
-	VGA_COLOR_BLUE = 1,
-	VGA_COLOR_GREEN = 2,
-	VGA_COLOR_CYAN = 3,
-	VGA_COLOR_RED = 4,
-	VGA_COLOR_MAGENTA = 5,
-	VGA_COLOR_BROWN = 6,
-	VGA_COLOR_LIGHT_GREY = 7,
-	VGA_COLOR_DARK_GREY = 8,
-	VGA_COLOR_LIGHT_BLUE = 9,
-	VGA_COLOR_LIGHT_GREEN = 10,
-	VGA_COLOR_LIGHT_CYAN = 11,
-	VGA_COLOR_LIGHT_RED = 12,
-	VGA_COLOR_LIGHT_MAGENTA = 13,
-	VGA_COLOR_LIGHT_BROWN = 14,
-	VGA_COLOR_WHITE = 15,
-};
-
-/*
-    * static: This means the function is only visible to the file it's in.
-    * inline: This is a hint to the compiler to "copy-paste" the math directly where the function is called instead of jumping to a separate piece of code. It's a tiny bit faster, which is good for low-level graphics
-	* uint8_t: This tells us the result is exactly 1 byte (8 bits).
-*/
-static inline uint8_t vga_entry_color(enum vga_color fg, enum vga_color bg) {
-	return fg | bg << 4; // The VGA hardware expects the color byte to be split: the first 4 bits are the foreground, and the last 4 bits are the background.
-	/*
-		A Concrete Example
-		Imagine you want Red text (4) on a Blue background (1).
-			Foreground (4) in binary: 0000 0100
-			Background (1) in binary: 0000 0001
-		When we do bg << 4, the background becomes: 0001 0000.
-		Now, we combine them:
-			0001 0000  (Background shifted)
-			0000 0100  (Foreground)
-			-----------
-			0001 0100  (Final byte: 0x14)
-
-		The VGA hardware sees 0x14 and knows exactly what colors to draw.
-	*/
-}
-
-static inline uint16_t vga_entry(unsigned char uc, uint8_t color) 
-{
-	return (uint16_t) uc | (uint16_t) color << 8;
-	/*
-		(uint16_t) uc: We take the character (like 'A', which is 0x41) and make sure the computer treats it as a 16-bit number: 00000000 01000001.
-		(uint16_t) color << 8: We take the color byte and "slide" it 8 bits to the left. If the color was 0x1F (White on Blue), it becomes 00011111 00000000.
-		| (Bitwise OR): We merge them together.
-
-		A single 16-bit value that looks like this: [ COLOR BYTE ] [ CHARACTER BYTE ]. The first 8-bit for color, and the second for data
-	*/
-}
-
-size_t strlen(const char* str) 
-{
-	size_t len = 0;
-	while (str[len])
-		len++;
-	return len;
-}
-
-#define VGA_WIDTH   80
-#define VGA_HEIGHT  25
-#define VGA_MEMORY  0xB8000 
-
-size_t terminal_row;
-size_t terminal_column;
-uint8_t terminal_color;
-uint16_t* terminal_buffer = (uint16_t*)VGA_MEMORY;
-
-/*
-	When booting a OS the 2000 slots for memory buffer might be filled with garbage, now we intentionally fill it with ' ' making it seem it is blank
-*/
-void terminal_initialize(void) 
-{
-	terminal_row = 0;
-	terminal_column = 0;
-	terminal_color = vga_entry_color( VGA_COLOR_BLUE, VGA_COLOR_BLACK );
-	
-	for (size_t y = 0; y < VGA_HEIGHT; y++) {
-		for (size_t x = 0; x < VGA_WIDTH; x++) {
-			const size_t index = y * VGA_WIDTH + x;
-			terminal_buffer[index] = vga_entry(' ', terminal_color);
-		}
-	}
-	/* We sync the physical cursor to (0,0) after clearing the screen */
-	terminal_update_cursor(terminal_column, terminal_row);
-}
-
-/*
-	Changes the color of the text
-*/
-void terminal_setcolor(uint8_t color) {
-	terminal_color = color;
-}
-
-/*
-	This is the "Scalpel." It doesn't care about cursors or rows; it just puts one character at one specific spot.
-    It calculates the index (the 1D "flat" address).
-    It calls vga_entry to pack the character and color together.
-    It writes that 16-bit package into the terminal_buffer.
-*/
-void terminal_putentryat(char c, uint8_t color, size_t x, size_t y) {
-	const size_t index = y * VGA_WIDTH + x;
-	terminal_buffer[index] = vga_entry(c, color);
-}
-
-void terminal_scroll() {
-    // 1. Move rows 1 through 24 up by one
-    for (size_t y = 0; y < VGA_HEIGHT - 1; y++) {
-        for (size_t x = 0; x < VGA_WIDTH; x++) {
-            const size_t src_index = (y + 1) * VGA_WIDTH + x;
-            const size_t dest_index = y * VGA_WIDTH + x;
-            terminal_buffer[dest_index] = terminal_buffer[src_index];
+        /* CASE 1: Handle Shift (Momentary) */
+        if (scancode == 0x2A || scancode == 0x36) {
+            is_shift_pressed = true;
         }
-    }
-
-    // 2. Clear the last row
-    const size_t last_row_y = VGA_HEIGHT - 1;
-    for (size_t x = 0; x < VGA_WIDTH; x++) {
-        const size_t index = last_row_y * VGA_WIDTH + x;
-        terminal_buffer[index] = vga_entry(' ', terminal_color);
-    }
-}
-
-void terminal_putchar(char c) 
-{
-	if (c == '\n') {
-        terminal_column = 0;
-
-		if (++terminal_row == VGA_HEIGHT) {
-            terminal_scroll();
-            terminal_row = VGA_HEIGHT - 1;
+        else if (scancode == 0xAA || scancode == 0xB6) {
+            is_shift_pressed = false;
         }
-	}
-	else if (c == '\t') {
-		terminal_column = (terminal_column + 4) & ~3; // This aligns to the next multiple of 4
-		if (terminal_column >= VGA_WIDTH) {           // Check if we went off the edge
-			terminal_column = 0;
-			if (++terminal_row == VGA_HEIGHT) {
-				terminal_scroll();
-				terminal_row = VGA_HEIGHT - 1;
-			}
-		}
-	}
-	else {
-        terminal_putentryat(c, terminal_color, terminal_column, terminal_row);
-        if (++terminal_column == VGA_WIDTH) {
-            terminal_column = 0;
-            if (++terminal_row == VGA_HEIGHT) {
-                terminal_scroll();
-                terminal_row = VGA_HEIGHT - 1;
+        
+        /* CASE 2: Handle Caps Lock (Toggle) */
+        else if (scancode == 0x3A) {
+            /* 0x3A is Caps Lock Press. We flip the boolean. */
+            is_caps_locked = !is_caps_locked;
+        }
+        
+        /* CASE 3: Handle Typing */
+        else if (scancode < 0x80) {
+            /* We pass BOTH states to the function. 
+                The function will decide how to combine them.
+            */
+            char c = scancode_to_ascii(scancode, is_shift_pressed ^ is_caps_locked);
+            
+            if (c != 0) {
+                terminal_putchar(c);
             }
         }
     }
-
-	/* 
-		CRITICAL: After every character or control code (\n, \t), we update 
-		the physical cursor to match our terminal_column and terminal_row. 
-    */
-    terminal_update_cursor(terminal_column, terminal_row);
-}
-
-/*
-	Write out to the terminal
-*/
-void terminal_write(const char* data, size_t size) {
-	for (size_t i = 0; i < size; i++)
-		terminal_putchar(data[i]);
-}
-
-void terminal_writestring(const char* data) 
-{
-	terminal_write(data, strlen(data));
-}
-
-void kernel_main(void) 
-{
-	/* Initialize terminal interface */
-	terminal_initialize();
-
-	/* Newline support is left as an exercise. */
-	for (size_t i = 0; i < 25; ++i ){
-		terminal_writestring("Hello OS\n");
-	}
-	terminal_writestring("Hello \t FINAL");
 }
