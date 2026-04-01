@@ -16,6 +16,4 @@ static inline uint8_t inb(uint16_t port) {
     return ret;
 }
 
-size_t strlen(const char* str);
-
 #endif
